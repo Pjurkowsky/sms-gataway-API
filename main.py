@@ -3,6 +3,9 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import serial
+import logging
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
@@ -55,7 +58,7 @@ async def root():
 
 @app.post("/send-sms")
 async def add_sms_to_queue(sms: SMS) -> JSONResponse:
-    send_sms.delay(sms)
+    send_sms.delay(sms.dict())
     return JSONResponse(content={"message": "Sms added to Q"})
 
 
@@ -89,22 +92,41 @@ async def get_sms(status: str = "ALL") -> list[SMSInfo]:
 
 
 @celery.task
-def send_sms(sms: SMS) -> None:
+def send_sms(sms: dict) -> None:
+    import time
     with serial.Serial(
         "/dev/ttyUSB0", 9600, timeout=1
     ) as ser:  # is this always USB0, can we ensure it?
         # some delays needed propably
+        logger.info("Sending AT+CMGF=1")
         ser.write(b"AT+CMGF=1\r")
+        
+        time.sleep(1)
+        
+        response = ser.read_all().decode('utf-8')
+        logger.info(f'Response from modem: {response}')
+        
+        logger.info(f'Sending AT+CMGS="{sms["phone_number"]}"')
+        ser.write(f'AT+CMGS="{sms["phone_number"]}"\r'.encode())
+        
+        time.sleep(1)
+        
+        response = ser.read_all().decode('utf-8')
+        logger.info(f'Response from modem: {response}')
 
-        ser.write(f'AT+CMGS="{sms.phone_number}"\r'.encode())
-
-        ser.write(f"{sms.message}\r".encode())
-
+        logger.info(f"Sending {sms}")
+        ser.write(f"{sms}\r".encode())
+        time.sleep(1)
+        
+        logger.info(f"Sending {bytes([26])}")
         ser.write(bytes([26]))
 
         response = ""
         while ser.in_waiting > 0:
             response += ser.read(1).decode()
 
-        if "ERROR" in response or not response.endswith("OK"):
-            raise Exception("Failed to send SMS")
+        logger.info(f'Response from modem: {response}')
+
+
+        # if "ERROR" in response or not response.endswith("OK"):
+        #     raise Exception(f"Failed to send SMS. {response}")
